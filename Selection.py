@@ -25,29 +25,35 @@ def SUS(population, fitness_scores, num_parents=2):
     return parents, parents_indices, relative_fitness
 
 
-def RWS(population, fitness_values, num_parents=2):
+def RWS(population, fitness_values, num_parents=2, max_attempts=100):
     total_fitness = sum(fitness_values)
     if total_fitness == 0:
         return randomz(population, fitness_values)
     relative_fitness = [f / total_fitness for f in fitness_values]
     cumulative_probability = [sum(relative_fitness[:i + 1]) for i in range(len(relative_fitness))]
-    # check if relative fitness is the same for all individuals
-    if len(set(relative_fitness)) == 1:
-        return randomz(population, fitness_values)
-    # if there are just two individuals , return them both
-    if len(population) == 2:
-        return population, [0, 1], relative_fitness
     selected = []
-    selected_indices = []  # Store the indices of the selected parents
-    while len(selected) < num_parents:
+    selected_indices = set()
+    attempts = 0
+    while len(selected) < num_parents and attempts < max_attempts:
         rand_num = random.uniform(0, 1)
         for i in range(len(cumulative_probability)):
             if rand_num <= cumulative_probability[i]:
-                if population[i] not in selected:
+                if i not in selected_indices:
                     selected.append(population[i])
-                    selected_indices.append(i)  # Add the index of the selected parent
+                    selected_indices.add(i)
                     break
-    return selected, selected_indices, relative_fitness
+                else:
+                    attempts += 1
+                    break                  
+    # If we haven't selected enough parents, randomly pick the rest
+    while len(selected) < num_parents:
+        rand_index = random.randint(0, len(population) - 1)
+        if rand_index not in selected_indices:
+            selected.append(population[rand_index])
+            selected_indices.add(rand_index)
+    
+    return selected, list(selected_indices), relative_fitness
+
 
 
 def tournament(population, fitness_values, num_parents=2, k=5):

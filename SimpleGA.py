@@ -1,4 +1,6 @@
+from itertools import product
 import math
+import pickle
 import random
 import numpy as np
 import time
@@ -160,34 +162,45 @@ def is_valid_layout(encoded_rows):
 
     return s_count == 1 and t_count == 1
 
-def count_effective_ineffective_timed_hazards(encoded_rows):
+def count_timed_hazards_neighbours(encoded_rows):
+    # return a dictionairy for each timed hazard and the number of neighbours it has
     rows = len(encoded_rows)
     cols = len(encoded_rows[0])
-    ineffective_count = 0
-    effective_count=0
-
+    timed_hazards = {}
     for row in range(rows):
         for col in range(cols):
             current_cell = encoded_rows[row][col]
             if current_cell == 'M':
-                has_effect = False
+                timed_hazards[(row, col)] = 0
                 for adj_row in range(row - 1, row + 2):
                     for adj_col in range(col - 1, col + 2):
                         if 0 <= adj_row < rows and 0 <= adj_col < cols:
                             adj_cell = encoded_rows[adj_row][adj_col]
-                            if adj_cell == 'P':  # or any other condition you deem as "effective"
-                                has_effect = True
-                                break
-                    if has_effect:
-                        effective_count+=1
-                        break
-                if not has_effect:
-                    ineffective_count+=1
-    return effective_count,ineffective_count
+                            if adj_cell == 'P' or adj_cell == 'N':
+                                timed_hazards[(row, col)] += 1
+    return timed_hazards
+
+def count_static_hazards_neighbours(encoded_rows):
+    # return a dictionairy for each static hazard and the number of neighbours it has
+    rows = len(encoded_rows)
+    cols = len(encoded_rows[0])
+    static_hazards = {}
+    for row in range(rows):
+        for col in range(cols):
+            current_cell = encoded_rows[row][col]
+            if current_cell == 'H':
+                static_hazards[(row, col)] = 0
+                for adj_row in range(row - 1, row + 2):
+                    for adj_col in range(col - 1, col + 2):
+                        if 0 <= adj_row < rows and 0 <= adj_col < cols:
+                            adj_cell = encoded_rows[adj_row][adj_col]
+                            if adj_cell == 'P' or adj_cell == 'N':
+                                static_hazards[(row, col)] += 1
+    return static_hazards
 
 def easy_level_fitness(individual,difficulty='easy'):
     level = binary_to_encoding(individual,difficulty)
-    G = construct_and_draw_graph(level, False)
+    G = construct_graph(level)
     # Find nodes with specific colors (S and T)
     start_node = [node for node, attr in G.nodes(data=True) if attr['color'] == 'green'][0]
     end_node = [node for node, attr in G.nodes(data=True) if attr['color'] == 'red'][0]
@@ -200,7 +213,7 @@ def easy_level_fitness(individual,difficulty='easy'):
     blue_nodes_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'blue')
     
     # Calculate percentage of blue nodes
-    blue_nodes_ratio = blue_nodes_count / G.number_of_nodes()
+    blue_nodes_ratio = blue_nodes_count / (G.number_of_nodes()-2)
 
     # count the ratio of red edges to all edges
     red_edges_count = sum(1 for _, _, attr in G.edges(data=True) if attr.get('color') == 'red')
@@ -214,45 +227,147 @@ def easy_level_fitness(individual,difficulty='easy'):
     
     # we want to cap the number of paths to 4 and penalize for each additional path
     number_of_paths = len(list(paths))
-    path_factor = 3/number_of_paths
+    #pick a random number between 5 and 1
+
+    path_factor = 5/number_of_paths
     
-    if blue_nodes_ratio >= 0.7:
+    if blue_nodes_ratio >= 0.5:
         return 1 * path_factor * (1-red_edges_ratio)  # Or some high fitness value
     else:
         return blue_nodes_ratio * path_factor * (1-red_edges_ratio)  # Or some function of blue_nodes_ratio to scale the fitness
 
-def medium_level_fitness(individual):
-    level = binary_to_encoding(individual)
-    G = construct_and_draw_graph(level, False)
-    # Find nodes with specific colors (S and T)
+def medium_level_fitness(individual, difficulty='medium'):
+    # Convert the binary individual to its encoding
+    level = binary_to_encoding(individual, difficulty)
+    # Construct the graph
+    G = construct_graph(level)
+    
+    # Find the start (S) and end (T) nodes
     start_node = [node for node, attr in G.nodes(data=True) if attr['color'] == 'green'][0]
     end_node = [node for node, attr in G.nodes(data=True) if attr['color'] == 'red'][0]
-    try:
-        shortest_path = nx.shortest_path(G, source=start_node, target=end_node)
-    except nx.NetworkXNoPath:
+    
+    # If no black edge is connected to T, there is no path from S to T. Return fitness 0.
+    if all(G[u][v].get('color', 'black') != 'black' for u, v in G.edges(end_node)):
+        return 0
+    
+    # Count the number of static hazards (yellow)
+    static_hazards_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'yellow')
+    if static_hazards_count == 0:
+        return 0
+    
+    # Count the neighbors for each static hazard
+    static_hazards_neighbours = count_static_hazards_neighbours(level)
+    
+    # Count the static hazards with zero neighbors
+    static_hazards_no_neighbours_count = sum(1 for _, neighbours in static_hazards_neighbours.items() if neighbours == 0)
+    active_static_hazards_count = static_hazards_count - static_hazards_no_neighbours_count
+    if active_static_hazards_count == 0:
         return 0
 
-    blue_nodes = sum(1 for node in shortest_path if G.nodes[node].get('color') == 'blue')
-    hazard_nodes = sum(1 for node in shortest_path if G.nodes[node].get('color') in ['orange', 'pink'])
+    # Count the number of enemies (orange)
+    enemies_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'orange')
+    if enemies_count == 0:
+        return 0
     
-    return hazard_nodes / (blue_nodes + 1)  # +1 to avoid division by zero
+    # Count the number of red edges and calculate its ratio to all edges
+    red_edges_count = sum(1 for _, _, attr in G.edges(data=True) if attr.get('color') == 'red')
+    red_edges_ratio = red_edges_count / G.number_of_edges()
+    
+    # Add bonus for static hazards with more than 3 neighbors
+    static_hazards_more_than_3_neighbours_count = sum(1 for _, neighbours in static_hazards_neighbours.items() if neighbours > 3)
 
-def hard_level_fitness(individual):
-    level = binary_to_encoding(individual)
-    G = construct_and_draw_graph(level, False)
-    # Find nodes with specific colors (S and T)
+    # check if there is at least 1 blue node with black edges
+    blue_nodes_with_black_edges_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'blue' and any(G[u][v].get('color', 'black') == 'black' for u, v in G.edges(_)))
+    if blue_nodes_with_black_edges_count == 0:
+        return 0
+    
+    # get all simple paths from S to T
+    try:
+        paths = nx.all_simple_paths(G, source=start_node, target=end_node)
+    except nx.NetworkXNoPath:
+        return 0
+    
+    # we want to cap the number of paths to 3 and penalize for each additional path
+    number_of_paths = len(list(paths))
+    paths_factor = 3/number_of_paths
+
+
+    # Calculate the final fitness value
+    result = paths_factor * (1 - red_edges_ratio) * active_static_hazards_count + enemies_count+ 4 * static_hazards_more_than_3_neighbours_count
+    
+    return result
+
+def hard_level_fitness(individual,difficulty='hard'):
+# Convert the binary individual to its encoding
+    level = binary_to_encoding(individual, difficulty)
+    # Construct the graph
+    G = construct_graph(level)
+    
+    # Find the start (S) and end (T) nodes
     start_node = [node for node, attr in G.nodes(data=True) if attr['color'] == 'green'][0]
     end_node = [node for node, attr in G.nodes(data=True) if attr['color'] == 'red'][0]
-    try:
-        shortest_path = nx.shortest_path(G, source=start_node, target=end_node)
-    except nx.NetworkXNoPath:
+    
+    # If no black edge is connected to T, there is no path from S to T. Return fitness 0.
+    if all(G[u][v].get('color', 'black') != 'black' for u, v in G.edges(end_node)):
+        return 0
+    
+    # Count the number of static hazards (yellow)
+    static_hazards_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'yellow')
+    if static_hazards_count == 0:
+        return 0
+    
+    timed_hazards_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'purple')
+    if timed_hazards_count == 0:
+        return 0
+    
+    timed_hazards_neighbours=count_timed_hazards_neighbours(level)
+    timed_hazards_no_neighbours=sum(1 for _, neighbours in timed_hazards_neighbours.items() if neighbours == 0)
+    active_timed_hazards_count=timed_hazards_count-timed_hazards_no_neighbours
+    if active_timed_hazards_count==0:
         return 0
 
-    path_length = len(shortest_path)
-    blue_nodes = sum(1 for node in shortest_path if G.nodes[node].get('color') == 'blue')
-    hazard_nodes = sum(1 for node in shortest_path if G.nodes[node].get('color') in ['orange', 'pink'])
+    # Count the neighbors for each static hazard
+    static_hazards_neighbours = count_static_hazards_neighbours(level)
+    # Count the static hazards with zero neighbors
+    static_hazards_no_neighbours_count = sum(1 for _, neighbours in static_hazards_neighbours.items() if neighbours == 0)
+    active_static_hazards_count = static_hazards_count - static_hazards_no_neighbours_count
+    if active_static_hazards_count == 0:
+        return 0
+
+    # Count the number of enemies (orange)
+    enemies_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'orange')
+    if enemies_count == 0:
+        return 0
     
-    return (hazard_nodes / (blue_nodes + 1)) * path_length
+    # Count the number of red edges and calculate its ratio to all edges
+    red_edges_count = sum(1 for _, _, attr in G.edges(data=True) if attr.get('color') == 'red')
+    red_edges_ratio = red_edges_count / G.number_of_edges()
+    
+    # Add bonus for static hazards with more than 3 neighbors
+    static_hazards_more_than_3_neighbours_count = sum(1 for _, neighbours in static_hazards_neighbours.items() if neighbours > 3)
+
+    # Add bonus for timed hazards with more than 3 neighbors
+    timed_hazards_more_than_3_neighbours_count = sum(1 for _, neighbours in timed_hazards_neighbours.items() if neighbours > 3)
+    # check if there is at least 1 blue node with black edges
+    blue_nodes_with_black_edges_count = sum(1 for _, attr in G.nodes(data=True) if attr.get('color') == 'blue' and any(G[u][v].get('color', 'black') == 'black' for u, v in G.edges(_)))
+    if blue_nodes_with_black_edges_count == 0:
+        return 0
+    
+    # get all simple paths from S to T
+    try:
+        paths = nx.all_simple_paths(G, source=start_node, target=end_node)
+    except nx.NetworkXNoPath:
+        return 0
+    
+    # we want to cap the number of paths to 3 and penalize for each additional path
+    number_of_paths = len(list(paths))
+    paths_factor = 3/number_of_paths
+
+
+    # Calculate the final fitness value
+    result = paths_factor * (1 - red_edges_ratio) * active_timed_hazards_count + enemies_count+ 2 * static_hazards_more_than_3_neighbours_count + 3 * timed_hazards_more_than_3_neighbours_count
+    return result
+
 
 class chromosome:
     def __init__(self, values, age, genome_length=None,fitness=None):
@@ -277,10 +392,12 @@ class chromosome:
     def __hash__(self):
         return hash(tuple(self.values))
 
-def generate_chunk_population(pop_size,difficulty, genome_length=12):
+#genome_length/3 is the number of cells in each row (number of columns) minimum is 3 columns
+def generate_chunk_population(pop_size,difficulty, cols,rows):
+    genome_length = cols*3
     population = []
     for i in range(pop_size):
-        values = [random.randint(0, 1) for _ in range(genome_length*4)]
+        values = [random.randint(0, 1) for _ in range(genome_length*rows)]
         population.append(chromosome(values, 0, genome_length))
     #preprocess the population
     for individual in population:
@@ -337,13 +454,13 @@ def binary_to_encoding(individual,difficulty=None):
                 elif chunk_str == '011':
                     encoded_row.append('H')
                 elif chunk_str == '100':
-                    encoded_row.append('P')
+                    encoded_row.append('N')
                 elif chunk_str == '101':
                     encoded_row.append('S')
                 elif chunk_str == '110':
                     encoded_row.append('T')
                 elif chunk_str == '111':
-                    encoded_row.append('E')
+                    encoded_row.append('H')
             encoded_rows.append(encoded_row)
     elif difficulty=='easy':
         for row in rows:
@@ -430,9 +547,11 @@ def encoding_to_binary(encoded_rows,difficulty=None):
                 elif cell == 'P':
                     binary.append('001')
                 elif cell == 'N':
-                    binary.append('010')
+                    # randomly append 010 or 100
+                    binary.append(random.choice(['010', '100']))
                 elif cell == 'H':
-                    binary.append('011')
+                    #randomly append 011 or 111
+                    binary.append(random.choice(['011', '111']))
                 elif cell == 'S':
                     binary.append('101')
                 elif cell == 'T':
@@ -451,6 +570,60 @@ def encoding_to_binary(encoded_rows,difficulty=None):
                 elif cell == 'T':
                     binary.append('110')
     return ''.join(binary)
+
+def encoding_to_binary_all(encoded_rows, difficulty=None):
+    options_per_row = []
+
+    for row in encoded_rows:
+        options_this_row = []
+        for cell in row:
+            cell_options = []
+
+            if difficulty == 'hard':
+                cell_options.append({
+                    'E': '000',
+                    'P': '001',
+                    'N': '010',
+                    'F': '011',
+                    'M': '100',
+                    'S': '101',
+                    'T': '110',
+                    'H': '111',
+                }[cell])
+
+            elif difficulty == 'medium':
+                cell_options.append({
+                    'E': '000',
+                    'P': '001',
+                    'N': ['010', '100'],
+                    'H': ['011', '111'],
+                    'S': '101',
+                    'T': '110',
+                }[cell])
+
+            elif difficulty == 'easy':
+                cell_options.append({
+                    'E': ['000', '011', '111'],
+                    'P': ['001', '100'],
+                    'N': '010',
+                    'S': '101',
+                    'T': '110',
+                }[cell])
+
+            options_this_row.append(cell_options)
+
+        options_per_row.append(options_this_row)
+
+    all_combinations = []
+
+    for row in options_per_row:
+        row_combinations = list(product(*row))
+        all_combinations.append([''.join(combination) for combination in row_combinations])
+
+    final_combinations = list(product(*all_combinations))
+    final_combinations = [''.join(combination) for combination in final_combinations]
+
+    return final_combinations
 
 def remove_unreachable_nodes(G):
     # Find all start ('S') and target ('T') nodes
@@ -500,7 +673,7 @@ def color_edges_unreachable_from_S(G):
             
     return G
 
-def construct_and_draw_graph(encoded_rows,draw=False):
+def construct_graph(encoded_rows):
     G = nx.Graph()
     rows = len(encoded_rows)
     cols = len(encoded_rows[0])
@@ -542,17 +715,18 @@ def construct_and_draw_graph(encoded_rows,draw=False):
 
     # G = remove_unreachable_nodes(G)
     G = color_edges_unreachable_from_S(G)
+    return G
+
+def draw_graph(G):
     edge_colors = [G[u][v].get('color', 'black') for u, v in G.edges()]
     pos = {(x, y): (y, -x) for x, y in G.nodes()}
     labels = {node: G.nodes[node]['label'] for node in G.nodes()}
-    if draw:
-        nx.draw(G, pos, labels=labels, with_labels=True,
-                node_color=[nx.get_node_attributes(G, 'color').get(n, 'black') for n in G.nodes()],
-                edge_color=edge_colors,
-                node_size=300, font_size=8)
-        plt.show()
-    return G
-
+    nx.draw(G, pos, labels=labels, with_labels=True,
+            node_color=[nx.get_node_attributes(G, 'color').get(n, 'black') for n in G.nodes()],
+            edge_color=edge_colors,
+            node_size=300, font_size=8)
+    plt.show()
+    
 def calculate_paths(G,shortest_path_length):
     # Find coordinates of 'S' (start) and 'T' (target) based on their colors
     node_colors = nx.get_node_attributes(G, 'color')
@@ -582,6 +756,39 @@ def find_shortest_path(G):
         return path
     except nx.NetworkXNoPath:
         return "No path exists between S and T."
+    
+def graph_to_encoding(G, rows, cols):
+    # Initialize an empty encoding with 'E' for empty
+    encoding = [['E' for _ in range(cols)] for _ in range(rows)]
+    # Loop through each node in the graph
+    for node, attr in G.nodes(data=True):
+        row, col = node  # Assuming your nodes are tuples with (row, col)
+        color = attr.get('color', 'E')
+        # Convert color to your original encoding scheme
+        if color == 'green':
+            encoding[row][col] = 'S'
+        elif color == 'red':
+            encoding[row][col] = 'T'
+        elif color == 'blue' or color == 'pink':
+            encoding[row][col] = 'P'
+        elif color == 'orange':
+            encoding[row][col] = 'N'
+        elif color == 'purple':
+            encoding[row][col] = 'M'
+        elif color == 'yellow':
+            encoding[row][col] = 'H'
+    return encoding
+
+def load_or_create_pickle_file(filename):
+    if os.path.exists(filename):
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
+    else:
+        return set()
+
+def save_to_pickle_file(data, filename):
+    with open(filename, 'wb') as f:
+        pickle.dump(data, f)
 
 # Define the genetic algorithm
 def genetic_algorithm(pop_size, fitness_funcs, max_generations, parent_selections, crossover_funcs,
@@ -589,7 +796,7 @@ def genetic_algorithm(pop_size, fitness_funcs, max_generations, parent_selection
                       speciation=False,
                       sharing=False,
                       crowding=False,
-                      mut_p=0.5,difficulty=None):
+                      mut_p=0.5,difficulty=None,rows=3,cols=3):
     #choose the fitness function based on the given difficulty
     if difficulty=='easy':      
         fitness_func=fitness_funcs[0]
@@ -602,7 +809,6 @@ def genetic_algorithm(pop_size, fitness_funcs, max_generations, parent_selection
     population = []
     T_start = 50
     alpha = 0.5
-    threshold = 0
     count = 0
     exploitation_ratio = []
     exploration_ratio = []
@@ -614,17 +820,19 @@ def genetic_algorithm(pop_size, fitness_funcs, max_generations, parent_selection
     selection_propabilities = []
     gen_best_ind = []
     avg_gen_fitness = []
-    population = generate_chunk_population(pop_size,difficulty)
-    threshold = 0.3 * len(population[0].values)
+    population = generate_chunk_population(pop_size,difficulty, cols,rows)
+    #get a random fraction between 0.3 and 0.6
+    fraction = random.uniform(0.3,0.6)
+    threshold = fraction * len(population[0].values)
     max_distance = len(population[0].values)
     print("The mutation controll method is: ", mutation_controll.__name__)
-    if speciation:
-        k = find_optimal_k(population, 19, method='silhouette')
-        species = speciate(population, k, method='kmeans')
-    else:
-        species = [population]
     # Evolve the population for a fixed number of generations
     for generation in range(max_generations):
+        if speciation and generation % 20 == 0:
+            k = find_optimal_k(population, 19, method='silhouette')
+            species = speciate(population, k, method='kmeans')
+        else:
+            species = [population]
         loop_start = time.perf_counter()
         # randomly choose a parent selection method, a crossover method and a mutation method
         parent_selection = random.choice(parent_selections)
@@ -636,7 +844,7 @@ def genetic_algorithm(pop_size, fitness_funcs, max_generations, parent_selection
             fitnesses = [fitness_func(individual) for individual in
                          sp]
             fitnesses = scale(fitnesses)
-            if sharing:
+            if sharing and generation % 10 == 0:
                 fitnesses = calculate_shared_fitnesses(sp, fitnesses, threshold / 2, distance_func)
             # Select the best individuals for reproduction
             elite_size = max(2, int(len(sp) * 0.1))
@@ -684,25 +892,29 @@ def genetic_algorithm(pop_size, fitness_funcs, max_generations, parent_selection
                     for child in mutated_children:
                         offspring.append(child)
                 else:
-                    # Pair each parent with a randomly chosen offspring
-                    offspring_indices = np.random.permutation(2)
-                    for parent_idx, offspring_idx in zip(parents_indices, offspring_indices):
-                        # Calculate the replacement probability
-                        similarityval = similarity_func(elites[parent_idx], mutated_children[offspring_idx],
-                                                        distance_func,
-                                                        max_distance)
-                        delta_fitness = fitness_func(mutated_children[offspring_idx]) - fitness_func(
-                            elites[parent_idx])
-                        temperature = max(T_start * (alpha ** generation), 1)
-                        replacement_probability = boltzmann_replacement_probability(delta_fitness,
-                                                                                    temperature) * similarityval
+                    if generation % 20 == 0:
+                        # Pair each parent with a randomly chosen offspring
+                        offspring_indices = np.random.permutation(2)
+                        for parent_idx, offspring_idx in zip(parents_indices, offspring_indices):
+                            # Calculate the replacement probability
+                            similarityval = similarity_func(elites[parent_idx], mutated_children[offspring_idx],
+                                                            distance_func,
+                                                            max_distance)
+                            delta_fitness = fitness_func(mutated_children[offspring_idx]) - fitness_func(
+                                elites[parent_idx])
+                            temperature = max(T_start * (alpha ** generation), 1)
+                            replacement_probability = boltzmann_replacement_probability(delta_fitness,
+                                                                                        temperature) * similarityval
 
-                        # Replace the parent with the offspring within the elites list if rand < replacement_probability
-                        if np.random.rand() < replacement_probability:
-                            elites[parent_idx] = mutated_children[offspring_idx]
+                            # Replace the parent with the offspring within the elites list if rand < replacement_probability
+                            if np.random.rand() < replacement_probability:
+                                elites[parent_idx] = mutated_children[offspring_idx]
 
-                            # Always add the offspring to the offspring list
-                        offspring.append(mutated_children[offspring_idx])
+                                # Always add the offspring to the offspring list
+                            offspring.append(mutated_children[offspring_idx])
+                    else:
+                        for child in mutated_children:
+                            offspring.append(child)
             # Update the population with the new set of elites and offspring
             species[i] = elites + offspring
         population = []
@@ -763,52 +975,160 @@ def main():
                                     adaptive_mutation_prob_population, triggered_hyper_mutation]
         scalling_methods = [linear_scaling, min_max_scaling, exponential_scaling, no_scaling]
         # just ask for the population size and the number of generations and the mutation probability , and then randomly choose the rest and run the algorithm
-        pop_size = int(input("Enter the population size: "))
-        max_generations = int(input("Enter the number of generations: "))
-        mut_p = float(input("Enter the mutation probability: "))
-        difficulty = input("Enter the difficulty : 1)easy 2)medium 3)hard : ")
-        if difficulty=='1':
-            difficulty='easy'
-        elif difficulty=='2':
-            difficulty='medium'
-        elif difficulty=='3':
-            difficulty='hard'
+        # cols=int(input("Enter the number of columns: "))
+        # rows=int(input("Enter the number of rows: "))
+        # if cols<3:
+        #     cols=3
+        # # make sure number of rows is minimum 1
+        # if rows<1:
+        #     rows=1
+        # pop_size = int(input("Enter the population size: "))
+        # max_generations = int(input("Enter the number of generations: "))
+        # mut_p = float(input("Enter the mutation probability: "))
+        # difficulty = input("Enter the difficulty : 1) easy 2) medium 3) hard : ")
+        # # randomly pick Sharing, Crowding and Speciation
+        # sharing = random.choice([True, False])
+        # crowding = random.choice([True, False])
+        # speciation = random.choice([True, False])
+        # if difficulty=='1':
+        #     difficulty='easy'
+        # elif difficulty=='2':
+        #     difficulty='medium'
+        # elif difficulty=='3':
+        #     difficulty='hard'
+        
+        #randomly pick the difficulty between easy and medium
+        difficulty = random.choice(['easy', 'medium', 'hard'])
+        if difficulty=='easy':
+            #randomly pick pop size between 100 and 300
+            pop_size = random.randint(100, 400)
+            #randomly pick max generations between 100 and 400
+            max_generations = random.randint(100, 400)
+            #randomly pick mutation probability between 0.1 and 0.7
+            mut_p = random.uniform(0.2, 0.7)
+            #randomly pick the number of rows between 2 and 5
+            rows = random.randint(2, 4)
+            #randomly pick the number of columns between 3 and 5
+            cols = random.randint(3, 5)
+        elif difficulty=='medium':
+            #randomly pick pop size between 100 and 300
+            pop_size = random.randint(100, 300)
+            #randomly pick max generations between 100 and 400
+            max_generations = random.randint(100, 400)
+            #randomly pick mutation probability between 0.1 and 0.7
+            mut_p = random.uniform(0.2, 0.7)
+            #randomly pick the number of rows between 2 and 5
+            rows = random.randint(3, 5)
+            #randomly pick the number of columns between 3 and 5
+            cols = random.randint(4, 6)
+        elif difficulty=='hard':
+            #randomly pick pop size between 100 and 300
+            pop_size = random.randint(100, 200)
+            #randomly pick max generations between 100 and 400
+            max_generations = random.randint(100, 400)
+            #randomly pick mutation probability between 0.1 and 0.7
+            mut_p = random.uniform(0.2, 0.7)
+            #randomly pick the number of rows between 2 and 5
+            rows = random.randint(4, 6)
+            #randomly pick the number of columns between 3 and 5
+            cols = random.randint(4, 7)
+        
+        #choose the fitness function based on the given difficulty
+        if difficulty=='easy':
+            fitness_func=fitness_functions[0]
+        elif difficulty=='medium':
+            fitness_func=fitness_functions[1]
+        elif difficulty=='hard':
+            fitness_func=fitness_functions[2]
+
+        #randomly pick Sharing, Crowding and Speciation
+        sharing = random.choice([True, False])
+        crowding = random.choice([True, False])
+        speciation = random.choice([True, False])
+
+        binary_levels = load_or_create_pickle_file(f'{difficulty}_levels_binary.pickle')
+        encoded_levels = load_or_create_pickle_file(f'{difficulty}_levels.pickle')
+
+        print("Numbers of levels in the set currently: ", len(encoded_levels))
+
+        #print all the parameters of the algorithm in a tidy way
+        print("***The parameters of the algorithm are:***")
+        print("rows x cols: ",rows,"x",cols)
+        print("The population size is: ", pop_size)
+        print("The number of generations is: ", max_generations)
+        print("The mutation probability is: ", mut_p)
+        print("The difficulty is: ", difficulty)
+        print("Sharing is: ", sharing)
+        print("Crowding is: ", crowding)
+        print("Speciation is: ", speciation)
+        print("***************")
+
+
+
         print("Start the algorithm ? (y/n)")
-        start = input()
+        # start = input()
+        #force start to be y
+        start = 'y'
         if start == 'y':
             # Run the algorithm
             best_individuals, best_fitness, exploitation_ratio, selection_pressure, fitness_variance, genetic_diversity \
                 , taspr, exploration_ratio, generation_fittest, gen_best_ind, sorted_population, avg_gen_fitness = \
                 genetic_algorithm(pop_size, fitness_functions, max_generations, parent_selections, crossover_functions,
-                                mutation_functions, mutation_controll_functions, scalling_methods[0], False,
-                                distance_functions[0], similarity_functions[0], True, True, True,
-                                mut_p, difficulty)
+                                mutation_functions, mutation_controll_functions, scalling_methods[0], True,
+                                distance_functions[0], similarity_functions[0], speciation, sharing, crowding,
+                                mut_p, difficulty,rows,cols)
             print("Do you want to see the best levels ? (y/n)")
-            show = input()
+            # show = input()
+            #force show to be n
+            show = 'n'
             if show == 'y':
                 # draw the graph of the best individuals
                 for individual in best_individuals:
                     encoded_rows = binary_to_encoding(individual,difficulty='easy')
-                    G = construct_and_draw_graph(encoded_rows, True)
-            print("Do you want to see graphs? (y/n)")
-            show = input()
+                    for row in encoded_rows:
+                        print(row)
+                    print("Want to see the graph for this level? (y/n)")
+                    show_graph = input()
+                    if show_graph == 'y':
+                        G = construct_graph(encoded_rows)
+                        G = remove_unreachable_nodes(G)
+                        draw_graph(G)
+                    skip_all = input("Skip all the rest of the levels? (y/n)")
+                    if skip_all == 'y':
+                        break
+            print("Do you want to see metric graphs? (y/n)")
+            # show = input()
+            #force show to be n
+            show = 'n'
             if show == 'y':
                 visualize_results(generation_fittest, genetic_diversity, exploration_ratio, exploitation_ratio,
                       fitness_variance, sorted_population, hamm_dist, len(best_individuals[0].values), similarity,avg_gen_fitness)
-            
-            
-            
+            #for each individual in the best individuals, if the fitness is not 0 , convert to graph , remove unreachable nodes, convert back to encoding and add to the set
+            for individual in best_individuals:
+                if fitness_func(individual,difficulty) != 0:
+                    encoded_rows = binary_to_encoding(individual,difficulty)
+                    G = construct_graph(encoded_rows)
+                    G = remove_unreachable_nodes(G)
+                    new_encoding = graph_to_encoding(G, len(encoded_rows), len(encoded_rows[0]))
+                    new_binary = encoding_to_binary(new_encoding,difficulty)
+                    binary_levels.add(new_binary)
+                    new_encoding_tuple = tuple(tuple(inner_list) for inner_list in new_encoding)
+                    encoded_levels.add(new_encoding_tuple)
+            #save the sets in pickle files
+            print("Do you want to save the levels ? (y/n)")
+            # save = input()
+            #force save to be y
+            save = 'y'
+            if save == 'y':
+                save_to_pickle_file(binary_levels, f'{difficulty}_levels_binary.pickle')
+                save_to_pickle_file(encoded_levels, f'{difficulty}_levels.pickle')
 
+if __name__ == '__main__':
+    profiler = cProfile.Profile()
+    profiler.enable()
+    main()  # Run your function or module
+    profiler.disable()
+    stats = pstats.Stats(profiler).sort_stats('tottime')  # 'tottime' for total time
+    stats.print_stats()
 
-
-
-
-profiler = cProfile.Profile()
-profiler.enable()
-
-main()  # Run your function or module
-
-profiler.disable()
-stats = pstats.Stats(profiler).sort_stats('tottime')  # 'tottime' for total time
-stats.print_stats()
 
