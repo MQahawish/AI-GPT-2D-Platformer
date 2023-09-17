@@ -16,14 +16,14 @@ def save_to_pickle_file(data, filename):
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
     
-easy_levels = 'easy_levels.pickle'
-easy_levels_binary = 'easy_levels_binary.pickle'
+easy_levels = 'levels_datasets\pickles\easy_levels.pickle'
+easy_levels_binary = 'levels_datasets\pickles\easy_levels_binary.pickle'
 
-medium_levels = 'medium_levels.pickle'
-medium_levels_binary = 'medium_levels_binary.pickle'
+medium_levels = 'levels_datasets\pickles\medium_levels.pickle'
+medium_levels_binary = 'levels_datasets\pickles\medium_levels_binary.pickle'
 
-hard_levels = 'hard_levels.pickle'
-hard_levels_binary = 'hard_levels_binary.pickle'
+hard_levels = 'levels_datasets\pickles\hard_levels.pickle'
+hard_levels_binary = 'levels_datasets\pickles\hard_levels_binary.pickle'
 
 easy_levels = load_or_create_pickle_file(easy_levels)
 easy_levels_binary = load_or_create_pickle_file(easy_levels_binary)
@@ -84,5 +84,5 @@ while True:
             print("Binary representation deleted")
 
     # Save the updated datasets
-    save_to_pickle_file(levels, f'{difficulty}_levels.pickle')
-    save_to_pickle_file(binary_levels, f'{difficulty}_levels_binary.pickle')
+    save_to_pickle_file(levels, f'levels_datasets\pickles\{difficulty}_levels.pickle')
+    save_to_pickle_file(binary_levels, f'levels_datasets\pickles\{difficulty}_levels_binary.pickle')

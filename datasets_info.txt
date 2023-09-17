@@ -1,3 +1,0 @@
-easy levels: 2335
-medium levels: 2017
-hard levels: 1094

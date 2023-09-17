@@ -11,14 +11,14 @@ def load_or_create_pickle_file(filename):
     else:
         return set()
     
-easy_levels = 'easy_levels.pickle'
-easy_levels_binary = 'easy_levels_binary.pickle'
+easy_levels = 'levels_datasets\pickles\easy_levels.pickle'
+easy_levels_binary = 'levels_datasets\pickles\easy_levels_binary.pickle'
 
-medium_levels = 'medium_levels.pickle'
-medium_levels_binary = 'medium_levels_binary.pickle'
+medium_levels = 'levels_datasets\pickles\medium_levels.pickle'
+medium_levels_binary = 'levels_datasets\pickles\medium_levels_binary.pickle'
 
-hard_levels = 'hard_levels.pickle'
-hard_levels_binary = 'hard_levels_binary.pickle'
+hard_levels = 'levels_datasets\pickles\hard_levels.pickle'
+hard_levels_binary = 'levels_datasets\pickles\hard_levels_binary.pickle'
 
 easy_levels = load_or_create_pickle_file(easy_levels)
 easy_levels_binary = load_or_create_pickle_file(easy_levels_binary)
@@ -37,7 +37,7 @@ print('medium levels: ', len(medium_levels))
 print('hard levels: ', len(hard_levels))
 
 #print how many levels are in each dataset into the txt file datasets_info.txt but firstly clear the file
-with open('datasets_info.txt', 'w') as f:
+with open(r'levels_datasets\texts\datasets_info.txt', 'w') as f:
     f.write('easy levels: ' + str(len(easy_levels)) + '\n')
     f.write('medium levels: ' + str(len(medium_levels)) + '\n')
     f.write('hard levels: ' + str(len(hard_levels)) + '\n')
